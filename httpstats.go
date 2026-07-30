@@ -161,9 +161,12 @@ func DefaultOperationName(info *RequestTagInfo) string {
 }
 
 type ConnBegin struct {
-	Client     bool
-	StartTime  time.Time
-	RemoteAddr string
+	Client      bool
+	StartTime   time.Time
+	RemoteAddr  string
+	DNSDuration time.Duration // non-zero only on cold connections
+	TCPDuration time.Duration // non-zero only on cold connections
+	TLSDuration time.Duration // non-zero only on cold connections
 }
 
 func (*ConnBegin) isConnStats() {}
@@ -200,6 +203,7 @@ type InHeader struct {
 	ContentLength int64
 	StatusCode    int
 	Method        string
+	TTFB          time.Duration // client only: time from request body finish to first response byte
 }
 
 func (*InHeader) isRequestStats() {}
