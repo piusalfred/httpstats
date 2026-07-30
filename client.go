@@ -176,7 +176,12 @@ func (ct *ClientTransport) attachTrace(ctx context.Context, req *http.Request) c
 			}
 		},
 		Got100Continue: func() {},
-		Got1xxResponse: func(_ int, _ textproto.MIMEHeader) error {
+		Got1xxResponse: func(code int, header textproto.MIMEHeader) error {
+			ct.handler.HandleRequest(ctx, &InHeader{
+				Client:     true,
+				StatusCode: code,
+				Header:     http.Header(header),
+			})
 			return nil
 		},
 	}
