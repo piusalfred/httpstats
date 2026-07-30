@@ -2,10 +2,7 @@ module github.com/piusalfred/httpstats/tools/yamlfmt
 
 go 1.26.5
 
-tool (
-	github.com/google/yamlfmt/cmd/yamlfmt
-	go
-)
+tool github.com/google/yamlfmt/cmd/yamlfmt
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.7.1 // indirect
