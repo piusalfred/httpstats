@@ -1,0 +1,21 @@
+Benchmark results: sealed interface (v1) vs flat variant + pool (v2)
+
+=== Sealed interface (v1) ===
+goos: darwin
+goarch: arm64
+cpu: Apple M4 Pro
+
+BenchmarkServer_Simple-12    	xxxxxxxx	xxxxx ns/op	xxxxx B/op	xxx allocs/op
+BenchmarkClient_Simple-12    	xxxxxxxx	xxxxx ns/op	xxxxx B/op	xxx allocs/op
+BenchmarkServer_Body-12      	xxxxxxxx	xxxxx ns/op	xxxxx B/op	xxx allocs/op
+BenchmarkServer_Concurrent-12	xxxxxxxx	xxxxx ns/op	xxxxx B/op	xxx allocs/op
+
+=== Flat variant + pool (v2) ===
+goos: darwin
+goarch: arm64
+cpu: Apple M4 Pro
+
+BenchmarkServer_Simple-12    	16512	34727 ns/op	6441 B/op	76 allocs/op
+BenchmarkClient_Simple-12    	18013	33297 ns/op	6720 B/op	82 allocs/op
+BenchmarkServer_Body-12      	16222	40740 ns/op	8170 B/op	95 allocs/op
+BenchmarkServer_Concurrent-12	59677	9631 ns/op	6722 B/op	75 allocs/op
