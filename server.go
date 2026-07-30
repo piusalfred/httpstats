@@ -171,6 +171,11 @@ func (w *responseStatsWriter) WriteHeader(code int) {
 	}
 	w.statusCode = code
 	if code >= 100 && code < 200 {
+		w.handler.HandleRequest(w.ctx, &OutHeader{
+			Client:     false,
+			StatusCode: code,
+			Header:     w.w.Header().Clone(),
+		})
 		w.w.WriteHeader(code)
 		return
 	}
@@ -205,7 +210,34 @@ func (w *responseStatsWriter) Write(b []byte) (int, error) {
 
 func (w *responseStatsWriter) Unwrap() http.ResponseWriter { return w.w }
 
-var _ interface{ Unwrap() http.ResponseWriter } = (*responseStatsWriter)(nil)
+// ReadFrom implements io.ReaderFrom so io.Copy and http.ServeFile can
+// use the sendfile syscall instead of falling back to user-space
+// buffering. Without this, serving static files through the wrapper
+// silently degrades throughput and spikes CPU.
+func (w *responseStatsWriter) ReadFrom(r io.Reader) (int64, error) {
+	if !w.wroteHeader.Load() {
+		w.WriteHeader(http.StatusOK)
+	}
+	if rf, ok := w.w.(io.ReaderFrom); ok {
+		n, err := rf.ReadFrom(r)
+		if n > 0 {
+			w.handler.HandleRequest(w.ctx, &OutData{Client: false, Length: int(n)})
+		}
+		if err != nil {
+			if w.writeErr == nil {
+				w.writeErr = err
+			}
+			w.handler.HandleRequest(w.ctx, &OutData{Client: false, Length: 0, Error: err})
+		}
+		return n, err //nolint:wrapcheck // delegating to underlying io.ReaderFrom
+	}
+	return io.Copy(w, r) //nolint:wrapcheck // fallback to user-space Copy
+}
+
+var (
+	_ interface{ Unwrap() http.ResponseWriter } = (*responseStatsWriter)(nil)
+	_ io.ReaderFrom                             = (*responseStatsWriter)(nil)
+)
 
 // bodyEventReader wraps io.ReadCloser to fire InData/OutData on each Read.
 // Non-EOF errors are reported as separate events with Length=0 and Error set.

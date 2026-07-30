@@ -405,3 +405,36 @@ func TestContentLengthFromHeader(t *testing.T) {
 		})
 	}
 }
+
+func TestServerHandler_1xxFiresOutHeader(t *testing.T) {
+	rec := &recordingHandler{}
+	handler := ServerHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusContinue)
+		w.WriteHeader(http.StatusProcessing)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("done"))
+	}), WithServerHandler(rec))
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	resp, _ := http.Get(srv.URL)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+
+	var codes []int
+	for _, e := range rec.events {
+		if e.statsType == "OutHeader" {
+			codes = append(codes, e.statusCode)
+		}
+	}
+	if len(codes) != 3 {
+		t.Fatalf("expected 3 OutHeader events (100, 102, 200), got %d: %v", len(codes), codes)
+	}
+	if codes[0] != 100 || codes[1] != 102 || codes[2] != 200 {
+		t.Errorf("codes = %v; want [100 102 200]", codes)
+	}
+}
