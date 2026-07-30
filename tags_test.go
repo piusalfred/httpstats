@@ -135,7 +135,7 @@ func TestServerHandlerWriteErrorInEnd(t *testing.T) {
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
 	for _, e := range rec.events {
-		if e.statsType == "End" {
+		if e.eventType == OpEnd {
 			return
 		}
 	}
