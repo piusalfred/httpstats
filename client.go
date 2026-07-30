@@ -68,7 +68,7 @@ func NewClientTransport(opts ...ClientOption) *ClientTransport {
 
 func (ct *ClientTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	ctx := req.Context()
-	ctx = InjectTags(ctx, NewTags(defaultTagsCapacity))
+	ctx = InjectTags(ctx, NewTags())
 
 	info := &RequestTagInfo{
 		Client:         true,

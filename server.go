@@ -65,7 +65,7 @@ type serverHandler struct {
 
 func (sh *serverHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	ctx = InjectTags(ctx, NewTags(defaultTagsCapacity))
+	ctx = InjectTags(ctx, NewTags())
 
 	info := &RequestTagInfo{
 		Client:         false,
