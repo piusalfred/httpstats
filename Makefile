@@ -8,40 +8,38 @@ TPARSE     := $(GOTOOLS) tparse
 VULNCHECK  := $(GOTOOLS) vulncheck
 MDLINT     := $(GOTOOLS) mdlint
 YAMLFMT    := $(GOTOOLS) yamlfmt
-
-LEFTHOOK  := $(GOTOOLS) lefthook
+LEFTHOOK   := $(GOTOOLS) lefthook
 
 GOPKGS     := ./...
 
 .DEFAULT_GOAL := help
 
-.PHONY: help all build \
-        fmt lint fix test cover bench \
-        license tidy vuln mdlint yamlfmt \
-        ci hooks-install hooks-run
+.PHONY: help all build fmt lint fix test cover bench tidy ci hooks
 
 help: ## show available targets
 	@grep -E '^[a-zA-Z0-9_.-]+:.*## ' $(MAKEFILE_LIST) | \
 		awk -F':.*## ' '{ printf "  %-22s %s\n", $$1, $$2 }'
-
-# ── Development ─────────────────────────────────────────────────────────────
 
 all: fix test ## fix then test
 
 build: ## compile the package
 	@$(GO) build $(GOPKGS)
 
-fmt: yamlfmt ## format Go and YAML
+fmt: ## format everything: tidy, license, YAML, Go
+	@$(GO) mod tidy
+	@$(ADDLICENSE) -f LICENSE $$(find . -name "*.go" -not -path "./tools/*")
+	@$(YAMLFMT) .
 	@$(GOLANGCI) fmt $(GOPKGS)
 
 lint: ## run golangci-lint
 	@$(GOLANGCI) run $(GOPKGS)
 
-fix: ## go fix + golangci-lint --fix
+fix: ## auto-fix: go fix + lint fix + fmt
 	@$(GO) fix $(GOPKGS)
 	@$(GOLANGCI) run --fix $(GOPKGS)
+	@$(MAKE) fmt
 
-test: ## run tests with race detector and coverage
+test: ## run tests with race and coverage
 	@$(GO) test -race -json -coverpkg $(GOPKGS) -parallel=4 $(GOPKGS) | $(TPARSE) --all
 
 cover: ## run tests with coverage profile
@@ -54,33 +52,11 @@ bench: ## run benchmarks
 tidy: ## tidy module dependencies
 	@$(GO) mod tidy
 
-# ── Formatting ──────────────────────────────────────────────────────────────
-
-yamlfmt: ## format YAML files
-	@$(YAMLFMT) .
-
-license: ## add license headers to Go files
-	@$(ADDLICENSE) -f LICENSE $$(find . -name "*.go" \
-		-not -path "./tools/*" \
-		-not -path "./_examples/*" \
-		-not -path "./extras/*")
-
-mdlint: ## lint markdown files
+ci: build fmt lint test ## run all checks
+	@$(GO) vet $(GOPKGS)
+	@$(VULNCHECK) $(GOPKGS)
 	@$(MDLINT) *.md
 
-# ── Security ────────────────────────────────────────────────────────────────
-
-vuln: ## run vulnerability check
-	@$(VULNCHECK) $(GOPKGS)
-
-# ── CI ──────────────────────────────────────────────────────────────────────
-
-ci: build fmt lint test vuln mdlint ## run all checks
-
-# ── Pre-commit ──────────────────────────────────────────────────────────────
-
-hooks-install: ## install git hooks
+hooks: ## install git hooks and run pre-commit
 	@$(LEFTHOOK) install
-
-hooks-run: ## run pre-commit checks on staged files
 	@$(LEFTHOOK) run pre-commit

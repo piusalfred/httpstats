@@ -46,6 +46,37 @@ Connection events (`TagConn → HandleConn`) fire independently.
 | `httpstats` | Core interface, stats types, middleware, transport |
 | `docs/` | Reference implementations for OTEL and Prometheus |
 
+## Development
+
+```bash
+bash tools/setup.sh   # install gotools, sync tools
+make hooks            # install pre-commit hooks
+```
+
+Tools are managed via [gotools](https://github.com/piusalfred/gotools).
+
+### Make targets
+
+| Command | Does |
+|---|---|
+| `make fmt` | go mod tidy, license headers, YAML, Go imports |
+| `make lint` | golangci-lint (no fixes) |
+| `make fix` | go fix + lint --fix + fmt |
+| `make test` | Tests with race detector and coverage |
+| `make ci` | Build + fmt + lint + vet + test + vulncheck + mdlint |
+| `make hooks` | Install and run pre-commit hooks |
+| `make tidy` | go mod tidy |
+| `make cover` | Tests with coverage profile output |
+| `make bench` | Run benchmarks |
+
+### Pre-commit
+
+On every commit, lefthook runs:
+
+- `fmt` — formats Go files, stages the result
+- `check` — golangci-lint + go vet
+- `test` — full test suite with race detector
+
 ## License
 
 MIT
