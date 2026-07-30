@@ -13,7 +13,7 @@ import (
 )
 
 func TestTagsSetGet(t *testing.T) {
-	tags := NewTags(2)
+	tags := NewTags()
 	tags.Set("tenant_id", "acme")
 	tags.Set("user_role", "admin")
 
@@ -31,7 +31,7 @@ func TestTagsSetGet(t *testing.T) {
 }
 
 func TestTagsSetOverwrite(t *testing.T) {
-	tags := NewTags(2)
+	tags := NewTags()
 	tags.Set("key", "old")
 	tags.Set("key", "new")
 	if v, _ := tags.Get("key"); v != "new" {
@@ -40,7 +40,7 @@ func TestTagsSetOverwrite(t *testing.T) {
 }
 
 func TestTagsConcurrent(t *testing.T) {
-	tags := NewTags(4)
+	tags := NewTags()
 	var wg sync.WaitGroup
 	for range 100 {
 		wg.Add(1)
@@ -54,7 +54,7 @@ func TestTagsConcurrent(t *testing.T) {
 }
 
 func TestTagsRange(t *testing.T) {
-	tags := NewTags(3)
+	tags := NewTags()
 	tags.Set("a", "1")
 	tags.Set("b", "2")
 	tags.Set("c", "3")
@@ -67,7 +67,7 @@ func TestTagsRange(t *testing.T) {
 }
 
 func TestTagsRangeEarlyExit(t *testing.T) {
-	tags := NewTags(3)
+	tags := NewTags()
 	tags.Set("a", "1")
 	tags.Set("b", "2")
 	tags.Set("c", "3")
@@ -80,7 +80,7 @@ func TestTagsRangeEarlyExit(t *testing.T) {
 }
 
 func TestInjectTagsAndFromContext(t *testing.T) {
-	tags := NewTags(2)
+	tags := NewTags()
 	tags.Set("tenant_id", "acme")
 	ctx := InjectTags(context.Background(), tags)
 
@@ -135,8 +135,8 @@ func TestServerHandlerWriteErrorInEnd(t *testing.T) {
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
 	for _, e := range rec.events {
-		if e.eventType == OpEnd {
-			return // End found, test passes
+		if e.statsType == "End" {
+			return
 		}
 	}
 	t.Fatal("End event not found")
@@ -173,14 +173,6 @@ func TestClassifyEndError(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestTagsNewTagsHint(t *testing.T) {
-	tags := NewTags(0)
-	if tags.data == nil {
-		t.Fatal("NewTags(0) returned nil map")
-	}
-	tags.Set("k", "v")
 }
 
 var _ net.Error = (*timeoutError)(nil)

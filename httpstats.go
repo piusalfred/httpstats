@@ -66,8 +66,9 @@
 //
 // # Error Classification
 //
-// Use ClassifyEndError on OpEnd's Error field to distinguish client
-// disconnects, deadlines, write failures, and panics.
+// Use ClassifyEndError on the End event's Error field to distinguish client
+// disconnects (context.Canceled), deadline exhaustion, write failures, and
+// handler panics. Backends use this to set span status codes and metric labels.
 package httpstats
 
 import (
