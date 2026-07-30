@@ -22,12 +22,16 @@ TagRequest → Begin → InHeader → InData* → OutHeader → OutData* → End
 
 | Event | When it fires | What to do |
 |---|---|---|
-| `Begin` | Request starts | Capture start time (already done in TagRequest, but Begin gives a second chance) |
-| `InHeader` | Headers received | Record status code on the span or in state |
-| `OutHeader` | Headers sent | Same — which side sets status depends on `Client` field |
+| `Begin` | Request starts | Capture start time |
+| `InHeader` | Response headers arrive (client) or request headers received (server) | Record status code; on client, `TTFB` is the round-trip time from last request byte to first response byte |
+| `OutHeader` | Response headers written (server) or request headers sent (client) | Record status code |
 | `InData` | Body chunk read | Accumulate bytes read into an atomic counter |
 | `OutData` | Body chunk written | Accumulate bytes written into an atomic counter |
 | `End` | Request done | End the span, record metrics from accumulated counters |
+
+Connection events (`TagConn → ConnBegin/ConnEnd`) fire on new connections.
+`ConnBegin` carries `DNSDuration`, `TCPDuration`, and `TLSDuration` — non-zero
+only on cold connections (pool miss).
 
 `HandleRequest` may be called from multiple goroutines simultaneously under
 HTTP/2 full-duplex (a server reading the request body while writing the
@@ -582,6 +586,11 @@ Key points in the Prometheus handler:
 #### Payload direction
 
 - Always check `s.Client` when interpreting `InData`/`OutData`. The meaning flips between server and client.
+
+#### Connection tracing (cold starts)
+
+- `ConnBegin.DNSDuration`, `TCPDuration`, and `TLSDuration` are non-zero only on pool misses. Use them to isolate P99 latency caused by DNS, cross-region TCP, or TLS overhead.
+- `InHeader.TTFB` is the round-trip time from the last request byte to the first response byte — server queuing plus network transit.
 
 #### Mid-flight tags
 

@@ -2,6 +2,7 @@ package httpstats
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"net/http"
@@ -85,7 +86,8 @@ func (ct *ClientTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	startTime := time.Now()
 	ct.handler.HandleRequest(ctx, &Begin{Client: true, StartTime: startTime})
 
-	ctx = ct.attachTrace(ctx, req)
+	timings := &traceTimings{}
+	ctx = ct.attachTrace(ctx, req, timings)
 	req = req.WithContext(ctx)
 
 	if req.Body != nil {
@@ -111,12 +113,17 @@ func (ct *ClientTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		return nil, err //nolint:wrapcheck // returning RoundTripper error directly
 	}
 
+	ttfb := time.Duration(0)
+	if !timings.firstByteAt.IsZero() && !timings.wroteRequestAt.IsZero() {
+		ttfb = timings.firstByteAt.Sub(timings.wroteRequestAt)
+	}
 	ct.handler.HandleRequest(ctx, &InHeader{
 		Client:        true,
 		StatusCode:    resp.StatusCode,
 		Header:        resp.Header.Clone(),
 		ContentLength: resp.ContentLength,
 		Method:        req.Method,
+		TTFB:          ttfb,
 	})
 
 	resp.Body = &responseBodyReader{
@@ -129,11 +136,24 @@ func (ct *ClientTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return resp, nil
 }
 
-func (ct *ClientTransport) attachTrace(ctx context.Context, req *http.Request) context.Context {
+type traceTimings struct {
+	dnsStart, dnsDone           time.Time
+	tcpStart, tcpDone           time.Time
+	tlsStart, tlsDone           time.Time
+	wroteRequestAt, firstByteAt time.Time
+}
+
+func (ct *ClientTransport) attachTrace(ctx context.Context, req *http.Request, t *traceTimings) context.Context {
 	var gotConnReused bool
 	var connCtx context.Context
 
 	trace := &httptrace.ClientTrace{
+		DNSStart:          func(_ httptrace.DNSStartInfo) { t.dnsStart = time.Now() },
+		DNSDone:           func(_ httptrace.DNSDoneInfo) { t.dnsDone = time.Now() },
+		ConnectStart:      func(_, _ string) { t.tcpStart = time.Now() },
+		ConnectDone:       func(_, _ string, _ error) { t.tcpDone = time.Now() },
+		TLSHandshakeStart: func() { t.tlsStart = time.Now() },
+		TLSHandshakeDone:  func(_ tls.ConnectionState, _ error) { t.tlsDone = time.Now() },
 		GotConn: func(info httptrace.GotConnInfo) {
 			gotConnReused = info.Reused
 			if !info.Reused {
@@ -145,9 +165,12 @@ func (ct *ClientTransport) attachTrace(ctx context.Context, req *http.Request) c
 					},
 				)
 				ct.handler.HandleConn(connCtx, &ConnBegin{
-					Client:     true,
-					StartTime:  time.Now(),
-					RemoteAddr: info.Conn.RemoteAddr().String(),
+					Client:      true,
+					StartTime:   time.Now(),
+					RemoteAddr:  info.Conn.RemoteAddr().String(),
+					DNSDuration: dnsDuration(t.dnsStart, t.dnsDone),
+					TCPDuration: tcpDuration(t.tcpStart, t.tcpDone),
+					TLSDuration: tlsDuration(t.tlsStart, t.tlsDone),
 				})
 			}
 		},
@@ -159,6 +182,7 @@ func (ct *ClientTransport) attachTrace(ctx context.Context, req *http.Request) c
 			})
 		},
 		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			t.wroteRequestAt = time.Now()
 			if info.Err != nil {
 				ct.handler.HandleRequest(ctx, &OutData{
 					Client: true,
@@ -167,6 +191,7 @@ func (ct *ClientTransport) attachTrace(ctx context.Context, req *http.Request) c
 				})
 			}
 		},
+		GotFirstResponseByte: func() { t.firstByteAt = time.Now() },
 		PutIdleConn: func(err error) {
 			if !gotConnReused || err != nil {
 				if connCtx == nil {
@@ -176,12 +201,38 @@ func (ct *ClientTransport) attachTrace(ctx context.Context, req *http.Request) c
 			}
 		},
 		Got100Continue: func() {},
-		Got1xxResponse: func(_ int, _ textproto.MIMEHeader) error {
+		Got1xxResponse: func(code int, header textproto.MIMEHeader) error {
+			ct.handler.HandleRequest(ctx, &InHeader{
+				Client:     true,
+				StatusCode: code,
+				Header:     http.Header(header),
+			})
 			return nil
 		},
 	}
 
 	return httptrace.WithClientTrace(ctx, trace)
+}
+
+func dnsDuration(start, end time.Time) time.Duration {
+	if start.IsZero() || end.IsZero() {
+		return 0
+	}
+	return end.Sub(start)
+}
+
+func tcpDuration(start, end time.Time) time.Duration {
+	if start.IsZero() || end.IsZero() {
+		return 0
+	}
+	return end.Sub(start)
+}
+
+func tlsDuration(start, end time.Time) time.Duration {
+	if start.IsZero() || end.IsZero() {
+		return 0
+	}
+	return end.Sub(start)
 }
 
 // responseBodyReader wraps the response body to fire InData and the final
