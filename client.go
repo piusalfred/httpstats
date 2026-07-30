@@ -19,13 +19,10 @@ type clientConfig struct {
 	nameFunc func(*RequestTagInfo)
 }
 
-// WithClientTransport sets the base RoundTripper. Defaults to http.DefaultTransport.
 func WithClientTransport(rt http.RoundTripper) ClientOption {
 	return func(c *clientConfig) { c.rt = rt }
 }
 
-// WithClientHandler sets the stats handler. Multiple handlers are composed
-// via MultiHandler so each receives every event.
 func WithClientHandler(h ...Handler) ClientOption {
 	return func(c *clientConfig) {
 		switch len(h) {
@@ -38,26 +35,16 @@ func WithClientHandler(h ...Handler) ClientOption {
 	}
 }
 
-// WithClientNameFunc sets a function that populates RequestTagInfo.OperationName.
 func WithClientNameFunc(f func(*RequestTagInfo)) ClientOption {
 	return func(c *clientConfig) { c.nameFunc = f }
 }
 
-// ClientTransport wraps http.RoundTripper with the full request lifecycle:
-//
-//	TagRequest → Begin → OutHeader → OutData* → InHeader → InData* → End
-//
-// Uses httptrace for low-level connection events. On RoundTrip error,
-// the response body is drained for connection reuse and End fires with
-// the error.
 type ClientTransport struct {
 	rt       http.RoundTripper
 	handler  Handler
 	nameFunc func(*RequestTagInfo)
 }
 
-// NewClientTransport creates a ClientTransport. Defaults to NoopHandler
-// and http.DefaultTransport.
 func NewClientTransport(opts ...ClientOption) *ClientTransport {
 	cfg := &clientConfig{rt: http.DefaultTransport, handler: NoopHandler{}}
 	for _, o := range opts {
@@ -83,7 +70,13 @@ func (ct *ClientTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	ctx = ct.handler.TagRequest(ctx, info)
 
 	startTime := time.Now()
-	ct.handler.HandleRequest(ctx, &Begin{Client: true, StartTime: startTime})
+
+	ev := NewEvent()
+	ev.Type = OpBegin
+	ev.Client = true
+	ev.StartTime = startTime
+	ct.handler.HandleRequest(ctx, ev)
+	PutEvent(ev)
 
 	ctx = ct.attachTrace(ctx, req)
 	req = req.WithContext(ctx)
@@ -103,21 +96,25 @@ func (ct *ClientTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
 		}
-		ct.handler.HandleRequest(ctx, &End{
-			Client:  true,
-			EndTime: time.Now(),
-			Error:   err,
-		})
+		ev2 := NewEvent()
+		ev2.Type = OpEnd
+		ev2.Client = true
+		ev2.EndTime = time.Now()
+		ev2.Error = err
+		ct.handler.HandleRequest(ctx, ev2)
+		PutEvent(ev2)
 		return nil, err //nolint:wrapcheck // returning RoundTripper error directly
 	}
 
-	ct.handler.HandleRequest(ctx, &InHeader{
-		Client:        true,
-		StatusCode:    resp.StatusCode,
-		Header:        resp.Header.Clone(),
-		ContentLength: resp.ContentLength,
-		Method:        req.Method,
-	})
+	ev = NewEvent()
+	ev.Type = OpInHeader
+	ev.Client = true
+	ev.StatusCode = resp.StatusCode
+	ev.Header = resp.Header.Clone()
+	ev.ContentLength = resp.ContentLength
+	ev.Method = req.Method
+	ct.handler.HandleRequest(ctx, ev)
+	PutEvent(ev)
 
 	resp.Body = &responseBodyReader{
 		body:    resp.Body,
@@ -137,14 +134,15 @@ func (ct *ClientTransport) attachTrace(ctx context.Context, req *http.Request) c
 		GotConn: func(info httptrace.GotConnInfo) {
 			gotConnReused = info.Reused
 			if !info.Reused {
-				connCtx = ct.handler.TagConn( //nolint:fatcontext // context threading through handler chain
+				connCtx = ct.handler.TagConn( //nolint:fatcontext // connection context captured from parent
 					ctx,
 					&ConnTagInfo{
 						Client:     true,
 						RemoteAddr: info.Conn.RemoteAddr(),
 					},
 				)
-				ct.handler.HandleConn(connCtx, &ConnBegin{
+				ct.handler.HandleConn(connCtx, &ConnEvent{
+					Type:       ConnOpBegin,
 					Client:     true,
 					StartTime:  time.Now(),
 					RemoteAddr: info.Conn.RemoteAddr().String(),
@@ -152,19 +150,22 @@ func (ct *ClientTransport) attachTrace(ctx context.Context, req *http.Request) c
 			}
 		},
 		WroteHeaders: func() {
-			ct.handler.HandleRequest(ctx, &OutHeader{
-				Client:        true,
-				Header:        req.Header.Clone(),
-				ContentLength: req.ContentLength,
-			})
+			ev := NewEvent()
+			ev.Type = OpOutHeader
+			ev.Client = true
+			ev.Header = req.Header.Clone()
+			ev.ContentLength = req.ContentLength
+			ct.handler.HandleRequest(ctx, ev)
+			PutEvent(ev)
 		},
 		WroteRequest: func(info httptrace.WroteRequestInfo) {
 			if info.Err != nil {
-				ct.handler.HandleRequest(ctx, &OutData{
-					Client: true,
-					Length: 0,
-					Error:  info.Err,
-				})
+				ev := NewEvent()
+				ev.Type = OpOutData
+				ev.Client = true
+				ev.Error = info.Err
+				ct.handler.HandleRequest(ctx, ev)
+				PutEvent(ev)
 			}
 		},
 		PutIdleConn: func(err error) {
@@ -172,21 +173,16 @@ func (ct *ClientTransport) attachTrace(ctx context.Context, req *http.Request) c
 				if connCtx == nil {
 					connCtx = ctx //nolint:fatcontext // fallback to request context
 				}
-				ct.handler.HandleConn(connCtx, &ConnEnd{Client: true, Error: err})
+				ct.handler.HandleConn(connCtx, &ConnEvent{Type: ConnOpEnd, Client: true, Error: err})
 			}
 		},
 		Got100Continue: func() {},
-		Got1xxResponse: func(_ int, _ textproto.MIMEHeader) error {
-			return nil
-		},
+		Got1xxResponse: func(_ int, _ textproto.MIMEHeader) error { return nil },
 	}
 
 	return httptrace.WithClientTrace(ctx, trace)
 }
 
-// responseBodyReader wraps the response body to fire InData and the final
-// End event. sync.Once guarantees exactly one End even if Read and Close
-// are called concurrently.
 type responseBodyReader struct {
 	body    io.ReadCloser
 	handler Handler
@@ -198,7 +194,12 @@ type responseBodyReader struct {
 func (r *responseBodyReader) Read(p []byte) (int, error) {
 	n, err := r.body.Read(p)
 	if n > 0 {
-		r.handler.HandleRequest(r.ctx, &InData{Client: true, Length: n})
+		ev := NewEvent()
+		ev.Type = OpInData
+		ev.Client = true
+		ev.Length = n
+		r.handler.HandleRequest(r.ctx, ev)
+		PutEvent(ev)
 	}
 	if err != nil {
 		r.fireEndOnce(err)
@@ -218,10 +219,12 @@ func (r *responseBodyReader) fireEndOnce(readErr error) {
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			endErr = readErr
 		}
-		r.handler.HandleRequest(r.ctx, &End{
-			Client:  true,
-			EndTime: time.Now(),
-			Error:   endErr,
-		})
+		ev := NewEvent()
+		ev.Type = OpEnd
+		ev.Client = true
+		ev.EndTime = time.Now()
+		ev.Error = endErr
+		r.handler.HandleRequest(r.ctx, ev)
+		PutEvent(ev)
 	})
 }

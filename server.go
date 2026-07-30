@@ -18,8 +18,6 @@ type serverConfig struct {
 	nameFunc func(*RequestTagInfo)
 }
 
-// WithServerHandler sets the stats handler for the middleware. Multiple
-// handlers are composed via MultiHandler so each receives every event.
 func WithServerHandler(h ...Handler) ServerOption {
 	return func(c *serverConfig) {
 		switch len(h) {
@@ -32,23 +30,10 @@ func WithServerHandler(h ...Handler) ServerOption {
 	}
 }
 
-// WithServerNameFunc sets a function that populates RequestTagInfo.OperationName.
-//
-//	httpstats.ServerHandler(mux, h,
-//	    httpstats.WithServerNameFunc(func(info *httpstats.RequestTagInfo) {
-//	        info.OperationName = info.Method + " " + routePattern
-//	    }),
-//	)
 func WithServerNameFunc(f func(*RequestTagInfo)) ServerOption {
 	return func(c *serverConfig) { c.nameFunc = f }
 }
 
-// ServerHandler wraps an http.Handler with the full request lifecycle:
-//
-//	TagRequest → Begin → InHeader → InData* → OutHeader → OutData* → End
-//
-// If the wrapped handler panics, the panic is recovered, End fires with a
-// panicError, and a 500 response is written.
 func ServerHandler(base http.Handler, opts ...ServerOption) http.Handler {
 	cfg := &serverConfig{handler: NoopHandler{}}
 	for _, o := range opts {
@@ -84,14 +69,12 @@ func (sh *serverHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if rsw != nil && !rsw.wroteHeader.Load() {
 				rsw.WriteHeader(http.StatusInternalServerError)
 			}
-			func() {
-				defer func() { _ = recover() }()
-				sh.handler.HandleRequest(ctx, &End{
-					Client:  false,
-					EndTime: time.Now(),
-					Error:   &panicError{val: p},
-				})
-			}()
+			ev := NewEvent()
+			ev.Type = OpEnd
+			ev.EndTime = time.Now()
+			ev.Error = &panicError{val: p}
+			sh.handler.HandleRequest(ctx, ev)
+			PutEvent(ev)
 		}
 	}()
 
@@ -99,14 +82,21 @@ func (sh *serverHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(ctx)
 	rsw = newResponseStatsWriter(w, sh.handler, ctx)
 
-	startTime := time.Now()
-	sh.handler.HandleRequest(ctx, &Begin{Client: false, StartTime: startTime})
-	sh.handler.HandleRequest(ctx, &InHeader{
-		Client:        false,
-		Header:        r.Header.Clone(),
-		ContentLength: r.ContentLength,
-		Method:        r.Method,
-	})
+	ev := NewEvent()
+	ev.Type = OpBegin
+	ev.Client = false
+	ev.StartTime = time.Now()
+	sh.handler.HandleRequest(ctx, ev)
+	PutEvent(ev)
+
+	ev = NewEvent()
+	ev.Type = OpInHeader
+	ev.Client = false
+	ev.Header = r.Header.Clone()
+	ev.ContentLength = r.ContentLength
+	ev.Method = r.Method
+	sh.handler.HandleRequest(ctx, ev)
+	PutEvent(ev)
 
 	if r.Body != nil {
 		r.Body = &bodyEventReader{
@@ -119,28 +109,23 @@ func (sh *serverHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	sh.base.ServeHTTP(rsw, r)
 
-	// The mux may have populated r.Pattern during dispatch (Go 1.22+).
-	// Capture it so backends can use it for span/metric names.
 	if r.Pattern != "" {
 		info.RequestPattern = r.Pattern
 	}
 
-	// Context errors (client disconnect, deadline) take precedence over
-	// write errors — a canceled context may cause the write to fail.
 	endErr := r.Context().Err()
 	if writeErr := rsw.writeErr; writeErr != nil && endErr == nil {
 		endErr = writeErr
 	}
-	sh.handler.HandleRequest(ctx, &End{
-		Client:  false,
-		EndTime: time.Now(),
-		Error:   endErr,
-	})
+	ev = NewEvent()
+	ev.Type = OpEnd
+	ev.Client = false
+	ev.EndTime = time.Now()
+	ev.Error = endErr
+	sh.handler.HandleRequest(ctx, ev)
+	PutEvent(ev)
 }
 
-// responseStatsWriter wraps http.ResponseWriter to fire OutHeader/OutData
-// events. wroteHeader is atomic to avoid races under concurrent Write calls
-// (HTTP/2 full-duplex).
 type responseStatsWriter struct {
 	w           http.ResponseWriter
 	handler     Handler
@@ -153,14 +138,9 @@ type responseStatsWriter struct {
 func newResponseStatsWriter(
 	w http.ResponseWriter,
 	h Handler,
-	ctx context.Context, //nolint:revive // ResponseWriter-first is idiomatic for HTTP middleware
+	ctx context.Context, //nolint:revive // ResponseWriter-first is idiomatic
 ) *responseStatsWriter {
-	return &responseStatsWriter{
-		w:          w,
-		handler:    h,
-		ctx:        ctx,
-		statusCode: http.StatusOK,
-	}
+	return &responseStatsWriter{w: w, handler: h, ctx: ctx, statusCode: http.StatusOK}
 }
 
 func (w *responseStatsWriter) Header() http.Header { return w.w.Header() }
@@ -177,12 +157,14 @@ func (w *responseStatsWriter) WriteHeader(code int) {
 	if w.wroteHeader.Swap(true) {
 		return
 	}
-	w.handler.HandleRequest(w.ctx, &OutHeader{
-		Client:        false,
-		StatusCode:    code,
-		Header:        w.w.Header().Clone(),
-		ContentLength: contentLengthFromHeader(w.w.Header()),
-	})
+	ev := NewEvent()
+	ev.Type = OpOutHeader
+	ev.Client = false
+	ev.StatusCode = code
+	ev.Header = w.w.Header().Clone()
+	ev.ContentLength = contentLengthFromHeader(w.w.Header())
+	w.handler.HandleRequest(w.ctx, ev)
+	PutEvent(ev)
 	w.w.WriteHeader(code)
 }
 
@@ -192,13 +174,23 @@ func (w *responseStatsWriter) Write(b []byte) (int, error) {
 	}
 	n, err := w.w.Write(b)
 	if n > 0 {
-		w.handler.HandleRequest(w.ctx, &OutData{Client: false, Length: n})
+		ev := NewEvent()
+		ev.Type = OpOutData
+		ev.Client = false
+		ev.Length = n
+		w.handler.HandleRequest(w.ctx, ev)
+		PutEvent(ev)
 	}
 	if err != nil {
 		if w.writeErr == nil {
 			w.writeErr = err
 		}
-		w.handler.HandleRequest(w.ctx, &OutData{Client: false, Length: 0, Error: err})
+		ev := NewEvent()
+		ev.Type = OpOutData
+		ev.Client = false
+		ev.Error = err
+		w.handler.HandleRequest(w.ctx, ev)
+		PutEvent(ev)
 	}
 	return n, err //nolint:wrapcheck // returning ResponseWriter error directly
 }
@@ -207,8 +199,6 @@ func (w *responseStatsWriter) Unwrap() http.ResponseWriter { return w.w }
 
 var _ interface{ Unwrap() http.ResponseWriter } = (*responseStatsWriter)(nil)
 
-// bodyEventReader wraps io.ReadCloser to fire InData/OutData on each Read.
-// Non-EOF errors are reported as separate events with Length=0 and Error set.
 type bodyEventReader struct {
 	body    io.ReadCloser
 	handler Handler
@@ -220,18 +210,28 @@ type bodyEventReader struct {
 func (r *bodyEventReader) Read(p []byte) (int, error) {
 	n, err := r.body.Read(p)
 	if n > 0 {
+		ev := NewEvent()
 		if r.inbound {
-			r.handler.HandleRequest(r.ctx, &InData{Client: r.client, Length: n})
+			ev.Type = OpInData
 		} else {
-			r.handler.HandleRequest(r.ctx, &OutData{Client: r.client, Length: n})
+			ev.Type = OpOutData
 		}
+		ev.Client = r.client
+		ev.Length = n
+		r.handler.HandleRequest(r.ctx, ev)
+		PutEvent(ev)
 	}
 	if err != nil && err != io.EOF {
+		ev := NewEvent()
 		if r.inbound {
-			r.handler.HandleRequest(r.ctx, &InData{Client: r.client, Length: 0, Error: err})
+			ev.Type = OpInData
 		} else {
-			r.handler.HandleRequest(r.ctx, &OutData{Client: r.client, Length: 0, Error: err})
+			ev.Type = OpOutData
 		}
+		ev.Client = r.client
+		ev.Error = err
+		r.handler.HandleRequest(r.ctx, ev)
+		PutEvent(ev)
 	}
 	return n, err //nolint:wrapcheck // returning Read error directly
 }
@@ -247,10 +247,6 @@ func contentLengthFromHeader(h http.Header) int64 {
 	return -1
 }
 
-// ServerConnState returns a function for http.Server.ConnState that fires
-// ConnBegin and ConnEnd for each connection lifecycle.
-//
-//	srv.ConnState = httpstats.ServerConnState(myHandler)
 func ServerConnState(h Handler) func(net.Conn, http.ConnState) {
 	if h == nil {
 		h = NoopHandler{}
@@ -274,7 +270,8 @@ func (sc *serverConnTracker) connState(conn net.Conn, state http.ConnState) {
 			RemoteAddr: conn.RemoteAddr(),
 			LocalAddr:  conn.LocalAddr(),
 		})
-		sc.handler.HandleConn(ctx, &ConnBegin{
+		sc.handler.HandleConn(ctx, &ConnEvent{
+			Type:       ConnOpBegin,
 			Client:     false,
 			StartTime:  time.Now(),
 			RemoteAddr: conn.RemoteAddr().String(),
@@ -294,7 +291,7 @@ func (sc *serverConnTracker) connState(conn net.Conn, state http.ConnState) {
 		}
 		sc.mu.Unlock()
 		if ok {
-			sc.handler.HandleConn(ctx, &ConnEnd{Client: false})
+			sc.handler.HandleConn(ctx, &ConnEvent{Type: ConnOpEnd, Client: false})
 		}
 	}
 }

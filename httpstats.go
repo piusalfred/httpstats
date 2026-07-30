@@ -2,14 +2,13 @@
 // net/http clients and servers, following the same decoupled design philosophy
 // as gRPC-Go's stats.Handler.
 //
+// This branch implements the flat-variant Event design with sync.Pool reuse
+// for benchmarking against the sealed-interface approach on main.
+//
 // Reference implementations for OpenTelemetry and Prometheus live in the
-// docs/ directory. Copy them into your project to use as a starting point —
-// they are not importable library packages.
+// docs/ directory.
 //
 // # Quick Start — Server
-//
-// Implement the Handler interface for your telemetry backend, or copy a
-// reference implementation from the docs/ directory:
 //
 //	wrapped := httpstats.ServerHandler(myMux, httpstats.WithServerHandler(myHandler))
 //	http.ListenAndServe(":8080", wrapped)
@@ -22,15 +21,10 @@
 //
 // # Combining Backends
 //
-// Use MultiHandler to run OTEL (tracing) and Prometheus (metrics) side by side:
-//
 //	composed := httpstats.MultiHandler{otelHandler, promHandler}
 //	wrapped := httpstats.ServerHandler(myMux, httpstats.WithServerHandler(composed))
 //
 // # Mid-Flight Telemetry Enrichment
-//
-// Downstream handlers can attach labels discovered at runtime (tenant ID, user
-// role) via the Tags container injected into every request context:
 //
 //	func myHandler(w http.ResponseWriter, r *http.Request) {
 //	    if tags := httpstats.FromContext(r.Context()); tags != nil {
@@ -40,53 +34,40 @@
 //
 // # Event Lifecycle
 //
-// Server-side event order:
+//	Server: TagRequest → OpBegin → OpInHeader → OpInData* → OpOutHeader → OpOutData* → OpEnd
+//	Client: TagRequest → OpBegin → OpOutHeader → OpOutData* → OpInHeader → OpInData* → OpEnd
 //
-//	TagRequest → Begin → InHeader → InData* → OutHeader → OutData* → End
-//
-// Client-side event order:
-//
-//	TagRequest → Begin → OutHeader → OutData* → InHeader → InData* → End
-//
-// Connection events (TagConn → HandleConn) fire independently and may overlap
-// with request events.
+// Connection events (TagConn → HandleConn) fire independently.
 //
 // # InData / OutData Asymmetry
 //
-// Unlike gRPC where payload flows are symmetric, HTTP is asymmetric. The
-// meaning of InData and OutData depends on the Client field:
+//	Server: OpInData = request body read,  OpOutData = response body written
+//	Client: OpOutData = request body written, OpInData = response body read
 //
-//	Server: InData = request body read,  OutData = response body written
-//	Client: OutData = request body written, InData = response body read
-//
-// Always check the Client field before interpreting payload direction.
+// Always check ev.Client before interpreting payload direction.
 //
 // # Full-Duplex Concurrency
 //
-// In HTTP/2 and HTTP/3, the request body can be read concurrently with the
-// response body being written — on different goroutines:
-//
-//   - HandleRequest may be called concurrently for InData/OutData events.
-//   - All byte counters in Handler implementations MUST use sync/atomic.
+// HandleRequest for OpInData/OpOutData may fire from different goroutines
+// than OpEnd. All byte counters in Handler implementations MUST use
+// sync/atomic. The Event struct is pooled — do not retain pointers to it
+// after HandleRequest returns.
 //
 // # Context Immutability
 //
-// context.Context is immutable — TagRequest can inject state, but downstream
-// handlers cannot push new labels back. Use the Tags container (FromContext /
-// Set) for any label discovered after TagRequest returns.
+// Use the Tags container (FromContext / Set) for labels discovered after
+// TagRequest returns.
 //
 // # Naming Strategy
 //
 // DefaultOperationName uses http.Request.Pattern (Go 1.22+) when available,
-// producing names like "GET /users/{id}". If neither OperationName nor Pattern
-// is set, it falls back to "HTTP {method}". Use WithServerNameFunc or
-// WithClientNameFunc to override with a custom naming scheme.
+// producing names like "GET /users/{id}". Override with WithServerNameFunc
+// or WithClientNameFunc.
 //
 // # Error Classification
 //
-// Use ClassifyEndError on the End event's Error field to distinguish client
-// disconnects (context.Canceled), deadline exhaustion, write failures, and
-// handler panics. Backends use this to set span status codes and metric labels.
+// Use ClassifyEndError on OpEnd's Error field to distinguish client
+// disconnects, deadlines, write failures, and panics.
 package httpstats
 
 import (
@@ -98,32 +79,17 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
 // Handler defines the interface for HTTP statistics collection.
-//
-// Implementations must be safe for concurrent use: HandleRequest may be
-// called concurrently for InData/OutData events under HTTP/2 full-duplex.
-//
-// Context flow:
-//
-//	TagConn(ctx) → ctx'
-//	  └─ TagRequest(ctx') → ctx''
-//	       └─ HandleRequest(ctx'', ...)
-//	  └─ HandleConn(ctx', ...)
 type Handler interface {
 	TagConn(ctx context.Context, info *ConnTagInfo) context.Context
-	HandleConn(ctx context.Context, stats ConnStats)
+	HandleConn(ctx context.Context, ev *ConnEvent)
 	TagRequest(ctx context.Context, info *RequestTagInfo) context.Context
-	HandleRequest(ctx context.Context, stats RequestStats)
+	HandleRequest(ctx context.Context, ev *Event)
 }
-
-// ConnStats is the sealed interface for connection-level statistics.
-type ConnStats interface{ isConnStats() }
-
-// RequestStats is the sealed interface for request-level statistics.
-type RequestStats interface{ isRequestStats() }
 
 type ConnTagInfo struct {
 	Client     bool
@@ -137,16 +103,10 @@ type RequestTagInfo struct {
 	Method         string
 	Host           string
 	URL            *url.URL
-	OperationName  string // defaults to "HTTP {method}" if empty
-	RequestPattern string // http.Request.Pattern (Go 1.22+)
+	OperationName  string
+	RequestPattern string
 }
 
-// DefaultOperationName returns the operation name. Precedence:
-//  1. info.OperationName if explicitly set
-//  2. info.RequestPattern if available:
-//     a. Used directly if it already contains a space (e.g. "GET /users/{id}")
-//     b. Prefixed with method otherwise (e.g. "/users/{id}" → "GET /users/{id}")
-//  3. "HTTP {method}" as final fallback
 func DefaultOperationName(info *RequestTagInfo) string {
 	if info.OperationName != "" {
 		return info.OperationName
@@ -160,98 +120,93 @@ func DefaultOperationName(info *RequestTagInfo) string {
 	return fmt.Sprintf("HTTP %s", info.Method)
 }
 
-type ConnBegin struct {
+// ---- Event types ----
+
+// EventType identifies the phase of the request lifecycle.
+type EventType int
+
+const (
+	OpBegin EventType = iota
+	OpEnd
+	OpInHeader
+	OpOutHeader
+	OpInData
+	OpOutData
+)
+
+// Event is a flat variant struct for all request-level lifecycle events.
+// Only fields relevant to the current Type are populated; others are zero.
+// Events are pooled via NewEvent/PutEvent — do not retain pointers.
+type Event struct {
+	Type          EventType
+	Client        bool
+	StartTime     time.Time
+	EndTime       time.Time
+	StatusCode    int
+	Length        int
+	Error         error
+	Method        string
+	Header        http.Header
+	ContentLength int64
+}
+
+//nolint:gochecknoglobals // pooled for zero-alloc event lifecycle
+var eventPool = sync.Pool{
+	New: func() any { return new(Event) },
+}
+
+// NewEvent returns a pooled Event. Call PutEvent after the handler processes it.
+func NewEvent() *Event {
+	ev, _ := eventPool.Get().(*Event)
+	return ev
+}
+
+// PutEvent returns an Event to the pool after resetting pointer fields.
+func PutEvent(ev *Event) {
+	ev.Type = 0
+	ev.Client = false
+	ev.StartTime = time.Time{}
+	ev.EndTime = time.Time{}
+	ev.StatusCode = 0
+	ev.Length = 0
+	ev.Error = nil
+	ev.Method = ""
+	ev.Header = nil
+	ev.ContentLength = 0
+	eventPool.Put(ev)
+}
+
+// ConnEventType identifies connection-level lifecycle phases.
+type ConnEventType int
+
+const (
+	ConnOpBegin ConnEventType = iota
+	ConnOpEnd
+)
+
+// ConnEvent is a flat variant struct for connection lifecycle events.
+type ConnEvent struct {
+	Type       ConnEventType
 	Client     bool
 	StartTime  time.Time
 	RemoteAddr string
+	Error      error
 }
 
-func (*ConnBegin) isConnStats() {}
+// ---- Error classification ----
 
-type ConnEnd struct {
-	Client bool
-	Error  error
-}
-
-func (*ConnEnd) isConnStats() {}
-
-type Begin struct {
-	Client    bool
-	StartTime time.Time
-}
-
-func (*Begin) isRequestStats() {}
-
-// End carries the final outcome of a request. Error is nil on success.
-// Use ClassifyEndError to categorize the error for span status / labels.
-type End struct {
-	Client  bool
-	EndTime time.Time
-	Error   error
-}
-
-func (*End) isRequestStats() {}
-
-// InHeader fires when request headers are received (server) or response
-// headers are received (client). StatusCode is zero on the server side.
-type InHeader struct {
-	Client        bool
-	Header        http.Header
-	ContentLength int64
-	StatusCode    int
-	Method        string
-}
-
-func (*InHeader) isRequestStats() {}
-
-// OutHeader fires when response headers are written (server) or request
-// headers are sent (client). StatusCode is zero on the client side.
-type OutHeader struct {
-	Client        bool
-	Header        http.Header
-	ContentLength int64
-	StatusCode    int
-}
-
-func (*OutHeader) isRequestStats() {}
-
-// InData fires for each chunk read from the request body (server) or
-// response body (client). When Error is non-nil (excluding io.EOF), the
-// read ended abnormally.
-type InData struct {
-	Client bool
-	Length int
-	Error  error
-}
-
-func (*InData) isRequestStats() {}
-
-// OutData fires for each chunk written to the response body (server) or
-// request body (client). When Error is non-nil, the write ended abnormally.
-type OutData struct {
-	Client bool
-	Length int
-	Error  error
-}
-
-func (*OutData) isRequestStats() {}
-
-// EndErrorKind categorizes the error on an End event.
 type EndErrorKind int
 
 const (
-	EndErrorNone     EndErrorKind = iota
-	EndErrorCanceled              // context.Canceled (client disconnect)
-	EndErrorDeadline              // context.DeadlineExceeded or net.Error Timeout
-	EndErrorWrite                 // write failure (broken pipe, reset)
-	EndErrorRead                  // read failure
-	EndErrorPanic                 // handler panic
-	EndErrorOther                 // unclassified
+	EndErrorNone EndErrorKind = iota
+	EndErrorCanceled
+	EndErrorDeadline
+	EndErrorWrite
+	EndErrorRead
+	EndErrorPanic
+	EndErrorOther
 )
 
-// ClassifyEndError categorizes the error on an End event. A nil error
-// returns EndErrorNone. Unwraps error chains via errors.Is and errors.As
-// so wrapped context errors are detected.
 func ClassifyEndError(err error) EndErrorKind {
 	if err == nil {
 		return EndErrorNone
@@ -283,14 +238,8 @@ func (e *panicError) Unwrap() error {
 	return nil
 }
 
-// MultiHandler composes multiple Handler instances into one. TagConn and
-// TagRequest are called in order, threading the context. HandleConn and
-// HandleRequest are called on all handlers. An empty MultiHandler is a no-op.
-//
-// This lets you combine backends — e.g. OTEL for tracing and Prometheus
-// for metrics — without either knowing about the other:
-//
-//	httpstats.MultiHandler{otelHandler, promHandler}
+// ---- Handler composition ----
+
 type MultiHandler []Handler
 
 func (mh MultiHandler) TagConn(ctx context.Context, info *ConnTagInfo) context.Context {
@@ -300,9 +249,9 @@ func (mh MultiHandler) TagConn(ctx context.Context, info *ConnTagInfo) context.C
 	return ctx
 }
 
-func (mh MultiHandler) HandleConn(ctx context.Context, stats ConnStats) {
+func (mh MultiHandler) HandleConn(ctx context.Context, ev *ConnEvent) {
 	for _, h := range mh {
-		h.HandleConn(ctx, stats)
+		h.HandleConn(ctx, ev)
 	}
 }
 
@@ -313,20 +262,19 @@ func (mh MultiHandler) TagRequest(ctx context.Context, info *RequestTagInfo) con
 	return ctx
 }
 
-func (mh MultiHandler) HandleRequest(ctx context.Context, stats RequestStats) {
+func (mh MultiHandler) HandleRequest(ctx context.Context, ev *Event) {
 	for _, h := range mh {
-		h.HandleRequest(ctx, stats)
+		h.HandleRequest(ctx, ev)
 	}
 }
 
 var _ Handler = MultiHandler{}
 
-// NoopHandler is a Handler whose methods are all no-ops.
 type NoopHandler struct{}
 
 func (NoopHandler) TagConn(ctx context.Context, _ *ConnTagInfo) context.Context       { return ctx }
-func (NoopHandler) HandleConn(_ context.Context, _ ConnStats)                         {}
+func (NoopHandler) HandleConn(_ context.Context, _ *ConnEvent)                        {}
 func (NoopHandler) TagRequest(ctx context.Context, _ *RequestTagInfo) context.Context { return ctx }
-func (NoopHandler) HandleRequest(_ context.Context, _ RequestStats)                   {}
+func (NoopHandler) HandleRequest(_ context.Context, _ *Event)                         {}
 
 var _ Handler = NoopHandler{}
