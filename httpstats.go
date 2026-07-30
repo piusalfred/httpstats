@@ -87,14 +87,6 @@
 // Use ClassifyEndError on the End event's Error field to distinguish client
 // disconnects (context.Canceled), deadline exhaustion, write failures, and
 // handler panics. Backends use this to set span status codes and metric labels.
-//
-// # Performance
-//
-// The core package targets ~3 heap allocations per request on the hot path:
-// Tags container, context.WithValue for per-handler state, and one event struct
-// per lifecycle phase. The sealed interface pattern (ConnStats, RequestStats)
-// matches gRPC's design; if profiling shows it as a bottleneck, future versions
-// may switch to a flat variant Event struct with sync.Pool reuse.
 package httpstats
 
 import (
