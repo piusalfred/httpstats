@@ -69,6 +69,19 @@
 //   - HandleRequest may be called concurrently for InData/OutData events.
 //   - All byte counters in Handler implementations MUST use sync/atomic.
 //
+// # Client Connection Tracing
+//
+// The ClientTransport hooks httptrace to emit connection-level timing data.
+// When a new connection is dialed (pool miss), ConnBegin carries:
+//
+//	DNSDuration — time spent resolving the hostname
+//	TCPDuration — time spent on the TCP handshake
+//	TLSDuration — time spent on the TLS handshake
+//
+// All durations are zero on reused connections (pool hit). InHeader.TTFB
+// captures the round-trip time from the last request byte to the first
+// response byte — server queuing plus network transit.
+//
 // # Context Immutability
 //
 // context.Context is immutable — TagRequest can inject state, but downstream
@@ -160,6 +173,11 @@ func DefaultOperationName(info *RequestTagInfo) string {
 	return fmt.Sprintf("HTTP %s", info.Method)
 }
 
+// ConnBegin is emitted when a new connection is established. On reused
+// connections (pool hit), DNSDuration, TCPDuration, and TLSDuration are
+// zero. On cold connections, they capture the cost of establishing the
+// link — useful for isolating P99 latency spikes caused by DNS flapping,
+// cross-region TCP handshake latency, or overloaded TLS termination.
 type ConnBegin struct {
 	Client      bool
 	StartTime   time.Time
@@ -195,8 +213,11 @@ type End struct {
 
 func (*End) isRequestStats() {}
 
-// InHeader fires when request headers are received (server) or response
-// headers are received (client). StatusCode is zero on the server side.
+// InHeader fires when response headers arrive (client) or request headers
+// are received (server). On the client side, TTFB measures the time from
+// the last byte of the request body to the first byte of the response —
+// the round-trip transit plus server routing/queuing time. Zero on the
+// server side.
 type InHeader struct {
 	Client        bool
 	Header        http.Header
