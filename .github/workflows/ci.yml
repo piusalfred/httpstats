@@ -1,0 +1,33 @@
+name: CI
+on:
+  push:
+    branches: [main]
+    tags: ["*"]
+  pull_request:
+    branches: [main]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+      - name: lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+      - name: vet
+        run: go vet ./...
+      - name: test
+        run: go test -race -count=1 -timeout 60s ./...
+      - name: vulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: "1.26"
+          check-latest: true
+      - name: mdlint
+        run: |
+          go install github.com/shinagawa-web/gomarklint/v3@latest
+          gomarklint $(find . -name "*.md" -not -path "./tools/*")

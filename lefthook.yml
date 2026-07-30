@@ -1,0 +1,23 @@
+pre-commit:
+  parallel: true
+  commands:
+    fmt:
+      glob: "*.go"
+      run: gotools exec lint fmt ./...
+      stage_fixed: true
+    lint:
+      glob: "*.go"
+      run: gotools exec lint run ./...
+    test:
+      glob: "*.go"
+      run: go test -race -count=1 -timeout 30s ./...
+    vet:
+      glob: "*.go"
+      run: go vet ./...
+    mdlint:
+      glob: "*.md"
+      run: gotools exec mdlint {staged_files}
+    yamlfmt:
+      glob: "*.{yml,yaml}"
+      run: gotools exec yamlfmt {staged_files}
+      stage_fixed: true
