@@ -2,7 +2,8 @@ package httpstats
 
 import (
 	"context"
-	"sync"
+
+	"github.com/go4org/hashtriemap"
 )
 
 type tagsKey struct{}
@@ -16,11 +17,8 @@ type tagsKey struct{}
 //	        tags.Set("tenant_id", extractTenant(r))
 //	    }
 //	}
-//
-// Tags uses sync.Map internally. Reads are lock-free once values are
-// stored, which fits the typical write-once-read-many telemetry pattern.
 type Tags struct {
-	m sync.Map
+	m hashtriemap.HashTrieMap[string, string]
 }
 
 // NewTags creates a Tags container.
@@ -36,18 +34,14 @@ func (t *Tags) Set(key, value string) {
 // Get retrieves the value for key. The boolean indicates whether the key
 // was present. Safe for concurrent use.
 func (t *Tags) Get(key string) (string, bool) {
-	v, ok := t.m.Load(key)
-	if !ok {
-		return "", false
-	}
-	return v.(string), true //nolint:errcheck // sync.Map loads into correct type
+	return t.m.Load(key)
 }
 
 // Range calls fn for each key-value pair. Iteration stops if fn returns
 // false. Safe for concurrent use.
 func (t *Tags) Range(fn func(key, value string) bool) {
-	t.m.Range(func(key, value any) bool {
-		return fn(key.(string), value.(string)) //nolint:errcheck // sync.Map Range values are always strings
+	t.m.Range(func(key, value string) bool {
+		return fn(key, value)
 	})
 }
 
