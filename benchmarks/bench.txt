@@ -1,19 +1,51 @@
-Benchmark results: sealed interface (v1) vs flat variant + pool (v2)
+Benchmark comparison: sealed interface (v1) vs flat variant + pool (v2)
 
-=== Sealed interface (v1) ===
+Identical handler logic in both cases — creates per-request state in
+TagRequest, accumulates bytes via atomics in HandleRequest, reads them
+back at End. The only difference is how events are represented.
+
+v1: each lifecycle phase allocates a dedicated struct (Begin, End,
+     InHeader, OutHeader, InData, OutData) through the sealed
+     ConnStats/RequestStats interface.
+
+v2: a single flat Event struct reused via sync.Pool. ev.Type
+     distinguishes the phase; only relevant fields are populated.
+
+Four scenarios, 500ms each, Apple M4 Pro, Go 1.26.
+
+=== v1 — sealed interface ===
+
 BenchmarkServer_Simple-12      16137    35389 ns/op    6630 B/op    81 allocs/op
 BenchmarkClient_Simple-12      16327    36969 ns/op    6913 B/op    87 allocs/op
 BenchmarkServer_Body-12        15992    37936 ns/op    8356 B/op   101 allocs/op
 BenchmarkServer_Concurrent-12  59934     9567 ns/op    6914 B/op    80 allocs/op
 
-=== Flat variant + pool (v2) ===
-BenchmarkServer_Simple-12      16512    34727 ns/op    6441 B/op    76 allocs/op
-BenchmarkClient_Simple-12      18013    33297 ns/op    6720 B/op    82 allocs/op
-BenchmarkServer_Body-12        16222    40740 ns/op    8170 B/op    95 allocs/op
-BenchmarkServer_Concurrent-12  59677     9631 ns/op    6722 B/op    75 allocs/op
+=== v2 — flat variant + pool ===
 
-=== Delta (v2 vs v1, negative = better) ===
-Server_Simple:      -662 ns/op   -189 B/op    -5 allocs/op
-Client_Simple:     -3672 ns/op   -193 B/op    -5 allocs/op
-Server_Body:       +2804 ns/op   -186 B/op    -6 allocs/op
-Server_Concurrent:   +64 ns/op   -192 B/op    -5 allocs/op
+BenchmarkServer_Simple-12      16768    35379 ns/op    6406 B/op    75 allocs/op
+BenchmarkClient_Simple-12      17572    33877 ns/op    6692 B/op    81 allocs/op
+BenchmarkServer_Body-12        15787    38056 ns/op    8166 B/op    94 allocs/op
+BenchmarkServer_Concurrent-12  60003     9462 ns/op    6722 B/op    74 allocs/op
+
+=== Delta (v2 − v1) ===
+
+Server_Simple:        -10 ns     -224 B     -6 allocs
+Client_Simple:      -3092 ns     -221 B     -6 allocs
+Server_Body:         +120 ns     -190 B     -7 allocs
+Server_Concurrent:   -105 ns     -192 B     -6 allocs
+
+The pool saves 6–7 heap allocations per request and ~200 bytes. Timings
+are within noise — the pool overhead is negligible.
+
+But the sealed interface in v1 gives compile-time safety: you cannot
+read StatusCode from a Begin event because Begin has no StatusCode field.
+The flat variant has all fields on every event — reading StatusCode on an
+OpBegin event silently returns zero.
+
+=== How to reproduce ===
+
+v1 (main branch):
+  cd benchmarks/v1 && go test -bench=. -benchmem -benchtime=500ms -count=1
+
+v2 (this branch):
+  cd benchmarks && go test -bench=. -benchmem -benchtime=500ms -count=1

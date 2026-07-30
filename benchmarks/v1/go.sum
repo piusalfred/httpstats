@@ -1,2 +1,6 @@
+github.com/go4org/hashtriemap v0.0.0-20251130024219-545ba229f689 h1:0psnKZ+N2IP43/SZC8SKx6OpFJwLmQb9m9QyV9BC2f8=
+github.com/go4org/hashtriemap v0.0.0-20251130024219-545ba229f689/go.mod h1:OGmRfY/9QEK2P5zCRtmqfbCF283xPkU2dvVA4MvbvpI=
 github.com/piusalfred/httpstats v0.0.0-20260730153303-a9892ca1a725 h1:TKRFzP0LA+m7G3vDNlSwiBLGMx/dF0s7sTAy3OD3/cM=
 github.com/piusalfred/httpstats v0.0.0-20260730153303-a9892ca1a725/go.mod h1:1/ZIgGEwnDqkHRpAYWxUm1ckh6+l6wJHN6banVUhiQg=
+github.com/piusalfred/httpstats v0.0.0-20260730165805-d8c9ff434776 h1:tXSoBbf474nUUon2ClsYf7cMNabP/PAcomLyEKjzfds=
+github.com/piusalfred/httpstats v0.0.0-20260730165805-d8c9ff434776/go.mod h1:eWbMwA1VnqPd7v5iL4fivKCZdVxifzYCR2Q5pd7gCNk=
