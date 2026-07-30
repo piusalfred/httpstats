@@ -49,8 +49,6 @@ func (h *captureHandler) operationName() string {
 	return httpstats.DefaultOperationName(h.info)
 }
 
-// ---- Pattern tests ----
-
 func TestServerHandler_PatternAvailableAtEnd(t *testing.T) {
 	t.Parallel()
 	capture := &captureHandler{}
@@ -100,8 +98,6 @@ func TestClientTransport_PatternPreset(t *testing.T) {
 	}
 }
 
-// ---- MultiHandler ----
-
 func TestMultiHandler_ContextThreading(t *testing.T) {
 	t.Parallel()
 	type ctxKey struct{}
@@ -134,8 +130,6 @@ func TestMultiHandler_AllCalled(t *testing.T) {
 	}
 }
 
-// ---- ClassifyEndError ----
-
 func TestClassifyEndError(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -160,8 +154,6 @@ func TestClassifyEndError(t *testing.T) {
 		})
 	}
 }
-
-// ---- Tags ----
 
 func TestServerHandler_TagsEndToEnd(t *testing.T) {
 	t.Parallel()
@@ -189,8 +181,6 @@ func TestServerHandler_TagsEndToEnd(t *testing.T) {
 		t.Errorf("tenant_id = %q", v)
 	}
 }
-
-// ---- Concurrent ----
 
 func TestServerHandler_ConcurrentRequests(t *testing.T) {
 	t.Parallel()
@@ -221,8 +211,6 @@ func TestServerHandler_ConcurrentRequests(t *testing.T) {
 	}
 }
 
-// ---- Client ----
-
 func TestClientTransport_ReadCloseRace(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -250,8 +238,6 @@ func TestClientTransport_ConnectionError(t *testing.T) {
 		t.Skip("expected connection error")
 	}
 }
-
-// ---- helpers ----
 
 type tagHandler struct {
 	tag func(context.Context) context.Context
