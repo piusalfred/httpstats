@@ -2,7 +2,10 @@
 set -euo pipefail
 
 echo "🔧 Installing gotools..."
-go install github.com/piusalfred/gotools/cmd/gotools@latest
+mkdir -p "$(go env GOPATH)/bin"
+curl -fsSL https://raw.githubusercontent.com/piusalfred/gotools/v0.6.7/gotools.sh \
+  -o "$(go env GOPATH)/bin/gotools"
+chmod +x "$(go env GOPATH)/bin/gotools"
 
 echo ""
 echo "🔄 Syncing tools..."
