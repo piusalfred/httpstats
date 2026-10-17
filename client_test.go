@@ -23,6 +23,7 @@
 package httpstats //nolint:testpackage // tests access unexported types
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -348,5 +349,49 @@ func TestClientTransportTagRequestMethod(t *testing.T) {
 	}
 	if tagReq.method != "PUT" {
 		t.Errorf("TagRequest.method = %q; want %q", tagReq.method, "PUT")
+	}
+}
+
+// headerHandler sets or records the request header from TagRequest.
+type headerHandler struct {
+	NoopHandler
+	set  func(http.Header)
+	seen http.Header
+}
+
+func (h *headerHandler) TagRequest(ctx context.Context, info *RequestTagInfo) context.Context {
+	if h.set != nil {
+		h.set(info.Header)
+	}
+	h.seen = info.Header.Clone()
+	return ctx
+}
+
+func TestClientTagRequestCanSetHeaders(t *testing.T) {
+	var got string
+	backend := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Traceparent")
+	}))
+	defer backend.Close()
+
+	h := &headerHandler{set: func(h http.Header) { h.Set("Traceparent", "00-abc") }}
+	client := &http.Client{Transport: NewClientTransport(WithClientHandler(h))}
+
+	req, err := http.NewRequest(http.MethodGet, backend.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	if got != "00-abc" {
+		t.Errorf("backend saw Traceparent %q, want the handler's value", got)
+	}
+	if v := req.Header.Get("Traceparent"); v != "" {
+		t.Errorf("the caller's request was mutated: Traceparent=%q", v)
 	}
 }

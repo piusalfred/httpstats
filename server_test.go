@@ -577,3 +577,25 @@ func (r *plainReader) Read(p []byte) (int, error) {
 	r.pos += n
 	return n, nil
 }
+
+func TestServerTagRequestSeesHeaders(t *testing.T) {
+	h := &headerHandler{}
+	srv := httptest.NewServer(ServerHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		WithServerHandler(h)))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Traceparent", "00-abc")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if got := h.seen.Get("Traceparent"); got != "00-abc" {
+		t.Errorf("TagRequest saw Traceparent %q, want 00-abc", got)
+	}
+}

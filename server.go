@@ -95,6 +95,7 @@ func (sh *serverHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Host:           r.Host,
 		URL:            r.URL,
 		RequestPattern: r.Pattern,
+		Header:         r.Header,
 	}
 	if sh.nameFunc != nil {
 		sh.nameFunc(info)
