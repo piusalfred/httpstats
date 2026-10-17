@@ -1,6 +1,6 @@
-module github.com/piusalfred/httpstats/tools/addlicense
+module github.com/riffbuild/httpstats/tools/addlicense
 
-go 1.26.5
+go 1.27
 
 tool github.com/google/addlicense
 

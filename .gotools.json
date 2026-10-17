@@ -3,7 +3,7 @@
   "strategy": "split",
   "dir": "tools",
   "go_version": "inherit",
-  "module_prefix": "github.com/piusalfred/httpstats",
+  "module_prefix": "github.com/riffbuild/httpstats",
   "settings": {
     "jobs": 1,
     "lock_stale_timeout": 300,

@@ -1,6 +1,6 @@
-module github.com/piusalfred/httpstats/tools/yamlfmt
+module github.com/riffbuild/httpstats/tools/yamlfmt
 
-go 1.26.5
+go 1.27
 
 tool github.com/google/yamlfmt/cmd/yamlfmt
 

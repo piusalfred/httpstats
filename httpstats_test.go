@@ -34,7 +34,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/piusalfred/httpstats"
+	"github.com/riffbuild/httpstats"
 )
 
 // captureHandler stores a pointer to the TagRequest info so it can be

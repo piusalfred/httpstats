@@ -10,7 +10,7 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/piusalfred/httpstats
+        - github.com/riffbuild/httpstats
     golines:
       max-len: 120
     gci:
@@ -25,7 +25,7 @@ formatters:
       custom-order: true
     gofumpt:
       extra-rules: true
-      module-path: github.com/piusalfred/httpstats
+      module-path: github.com/riffbuild/httpstats
 linters:
   enable:
     - asasalint
