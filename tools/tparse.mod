@@ -1,4 +1,4 @@
-module github.com/piusalfred/httpstats/tools/tparse
+module github.com/riffbuild/httpstats/tools/tparse
 
 go 1.26.5
 

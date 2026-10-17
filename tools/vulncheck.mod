@@ -1,4 +1,4 @@
-module github.com/piusalfred/httpstats/tools/vulncheck
+module github.com/riffbuild/httpstats/tools/vulncheck
 
 go 1.26.5
 

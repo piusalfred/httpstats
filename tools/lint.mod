@@ -1,4 +1,4 @@
-module github.com/piusalfred/httpstats/tools/lint
+module github.com/riffbuild/httpstats/tools/lint
 
 go 1.26.5
 

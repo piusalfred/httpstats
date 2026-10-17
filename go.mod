@@ -1,5 +1,5 @@
-module github.com/piusalfred/httpstats
+module github.com/riffbuild/httpstats
 
-go 1.26.5
+go 1.27
 
-require github.com/go4org/hashtriemap v0.0.0-20251130024219-545ba229f689
+require github.com/go4org/hashtriemap v0.0.0-20260925222741-44e5305f85d9

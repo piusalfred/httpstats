@@ -1,4 +1,4 @@
-module github.com/piusalfred/httpstats/tools/lefthook
+module github.com/riffbuild/httpstats/tools/lefthook
 
 go 1.26.5
 

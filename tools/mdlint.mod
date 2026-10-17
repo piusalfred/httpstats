@@ -1,4 +1,4 @@
-module github.com/piusalfred/httpstats/tools/mdlint
+module github.com/riffbuild/httpstats/tools/mdlint
 
 go 1.26.5
 

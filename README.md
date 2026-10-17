@@ -5,7 +5,7 @@ backend. Modeled after gRPC-Go's `stats.Handler`. Zero dependencies beyond
 the standard library.
 
 ```bash
-go get github.com/piusalfred/httpstats
+go get github.com/riffbuild/httpstats
 ```
 
 ## Quick start
