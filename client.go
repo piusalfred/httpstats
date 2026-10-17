@@ -93,12 +93,17 @@ func (ct *ClientTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	ctx := req.Context()
 	ctx = InjectTags(ctx, NewTags())
 
+	// A RoundTripper must not modify the request it is given, but handlers
+	// may set headers in TagRequest, so they get a clone.
+	req = req.Clone(ctx)
+
 	info := &RequestTagInfo{
 		Client:         true,
 		Method:         req.Method,
 		Host:           req.URL.Host,
 		URL:            req.URL,
 		RequestPattern: req.Pattern,
+		Header:         req.Header,
 	}
 	if ct.nameFunc != nil {
 		ct.nameFunc(info)

@@ -174,6 +174,16 @@ type RequestTagInfo struct {
 	URL            *url.URL
 	OperationName  string // defaults to "HTTP {method}" if empty
 	RequestPattern string // http.Request.Pattern (Go 1.22+)
+
+	// Header is the request's header map, which lets a handler do context
+	// propagation in TagRequest, where it also starts its span.
+	//
+	// Client: the header of the outgoing request. ClientTransport hands the
+	// handler a private clone, so setting values (for example injecting trace
+	// context) changes what is sent without mutating the caller's request.
+	// Server: the header of the incoming request, for extracting an upstream
+	// trace context. Handlers must not modify it.
+	Header http.Header
 }
 
 // DefaultOperationName returns the operation name. Precedence:
