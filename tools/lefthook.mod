@@ -1,6 +1,6 @@
 module github.com/riffbuild/httpstats/tools/lefthook
 
-go 1.26.5
+go 1.27
 
 tool github.com/evilmartians/lefthook/v2
 

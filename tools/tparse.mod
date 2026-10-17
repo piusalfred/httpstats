@@ -1,6 +1,6 @@
 module github.com/riffbuild/httpstats/tools/tparse
 
-go 1.26.5
+go 1.27
 
 tool github.com/mfridman/tparse
 

@@ -1,6 +1,6 @@
 module github.com/riffbuild/httpstats/tools/vulncheck
 
-go 1.26.5
+go 1.27
 
 tool golang.org/x/vuln/cmd/govulncheck
 
