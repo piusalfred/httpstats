@@ -39,6 +39,27 @@ Client: TagRequest → Begin → OutHeader → OutData* → InHeader → InData*
 
 Connection events (`TagConn → HandleConn`) fire independently.
 
+## Context propagation
+
+`RequestTagInfo.Header` is the request header seen in `TagRequest`, where a
+handler also starts its span. On the client it is a private clone of the
+outgoing request's header, so injecting trace context there changes what is
+sent without mutating the caller's request. On the server it is the incoming
+header, for extracting an upstream trace context; do not modify it.
+
+```go
+func (h *tracing) TagRequest(ctx context.Context, info *httpstats.RequestTagInfo) context.Context {
+    if !info.Client {
+        ctx = propagator.Extract(ctx, propagation.HeaderCarrier(info.Header))
+    }
+    ctx, span := tracer.Start(ctx, httpstats.DefaultOperationName(info))
+    if info.Client {
+        propagator.Inject(ctx, propagation.HeaderCarrier(info.Header))
+    }
+    return context.WithValue(ctx, spanKey{}, span)
+}
+```
+
 ## Packages
 
 | Path | Purpose |
