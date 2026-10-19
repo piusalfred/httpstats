@@ -175,6 +175,13 @@ type RequestTagInfo struct {
 	OperationName  string // defaults to "HTTP {method}" if empty
 	RequestPattern string // http.Request.Pattern (Go 1.22+)
 
+	// Server only. Proto is the request protocol ("HTTP/1.1", "HTTP/2.0"),
+	// Scheme is "https" when the connection is TLS and "http" otherwise (it
+	// never trusts forwarding headers), and RemoteAddr is the peer address.
+	Proto      string
+	Scheme     string
+	RemoteAddr string
+
 	// Header is the request's header map, which lets a handler do context
 	// propagation in TagRequest, where it also starts its span.
 	//
@@ -237,10 +244,17 @@ func (*Begin) isRequestStats() {}
 
 // End carries the final outcome of a request. Error is nil on success.
 // Use ClassifyEndError to categorize the error for span status / labels.
+//
+// Server only: Route is where the request landed, as recorded by routers
+// through AddGroup and SetRoute, falling back to http.Request.Pattern for
+// plain http.ServeMux routing; HandlerError is the error a handler reported
+// through SetError. Both are final, unlike what TagRequest could see.
 type End struct {
-	Client  bool
-	EndTime time.Time
-	Error   error
+	Client       bool
+	EndTime      time.Time
+	Error        error
+	Route        Route
+	HandlerError error
 }
 
 func (*End) isRequestStats() {}

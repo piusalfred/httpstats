@@ -23,11 +23,14 @@
 package httpstats //nolint:testpackage // tests access unexported types (responseStatsWriter, bodyEventReader)
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -225,25 +228,31 @@ func TestServerHandlerStatusCodes(t *testing.T) {
 	}
 }
 
-func TestServerHandlerPanicRecovery(t *testing.T) {
+// quietServer starts an httptest server whose panic logging is silenced.
+func quietServer(h http.Handler) *httptest.Server {
+	srv := httptest.NewUnstartedServer(h)
+	srv.Config.ErrorLog = log.New(io.Discard, "", 0)
+	srv.Start()
+
+	return srv
+}
+
+// A panic is reported through End and then re-raised, so net/http drops the
+// connection exactly as it would without the wrapper.
+func TestServerHandlerPanicIsReported_AndReraised(t *testing.T) {
 	rec := &recordingHandler{}
 
 	handler := ServerHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("boom")
 	}), WithServerHandler(rec))
 
-	srv := httptest.NewServer(handler)
+	srv := quietServer(handler)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL)
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Errorf("status = %d; want 500", resp.StatusCode)
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	if resp, err := client.Get(srv.URL); err == nil {
+		resp.Body.Close()
+		t.Fatalf("got status %d; want the connection dropped", resp.StatusCode)
 	}
 
 	var endEvent *recordedEvent
@@ -259,12 +268,33 @@ func TestServerHandlerPanicRecovery(t *testing.T) {
 	if endEvent == nil {
 		t.Fatal("End event not found after panic")
 	}
-	if endEvent.endError == nil {
-		t.Error("End.Error is nil after panic; want panicError")
-	}
-	kind := ClassifyEndError(endEvent.endError)
-	if kind != EndErrorPanic {
+	if kind := ClassifyEndError(endEvent.endError); kind != EndErrorPanic {
 		t.Errorf("ClassifyEndError = %v; want EndErrorPanic", kind)
+	}
+}
+
+func TestServerHandlerPanicErrAbortHandler(t *testing.T) {
+	rec := &recordingHandler{}
+	var logged bytes.Buffer
+
+	srv := httptest.NewUnstartedServer(ServerHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	}), WithServerHandler(rec)))
+	srv.Config.ErrorLog = log.New(&logged, "", 0)
+	srv.Start()
+	defer srv.Close()
+
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	if resp, err := client.Get(srv.URL); err == nil {
+		resp.Body.Close()
+		t.Fatal("want the connection aborted")
+	}
+
+	if logged.Len() != 0 {
+		t.Errorf("net/http logged an ErrAbortHandler panic: %q", logged.String())
+	}
+	if !slices.Contains(rec.eventTypes(), "End") {
+		t.Error("End did not fire for ErrAbortHandler")
 	}
 }
 
@@ -278,15 +308,14 @@ func TestServerHandlerPanicRecovery_EventOrder(t *testing.T) {
 		panic("late-panic")
 	}), WithServerHandler(rec))
 
-	srv := httptest.NewServer(handler)
+	srv := quietServer(handler)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL)
-	if err != nil {
-		t.Fatalf("GET: %v", err)
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	if resp, err := client.Get(srv.URL); err == nil {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
 
 	types := rec.eventTypes()
 	// Verify End appears last.
@@ -534,8 +563,7 @@ func TestResponseStatsWriter_ReadFrom(t *testing.T) {
 	handler := ServerHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// io.Copy detects io.ReaderFrom on the destination, but only if the
 		// source does NOT implement io.WriterTo. Use a plain reader.
-		rsw := w.(*responseStatsWriter)
-		n, err := io.Copy(rsw, &plainReader{data: "hello world"})
+		n, err := io.Copy(w, &plainReader{data: "hello world"})
 		if err != nil {
 			t.Errorf("ReadFrom: %v", err)
 		}

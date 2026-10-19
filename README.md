@@ -60,6 +60,27 @@ func (h *tracing) TagRequest(ctx context.Context, info *httpstats.RequestTagInfo
 }
 ```
 
+## Server routing and std-lib behavior
+
+Routers report where a request landed so recorders can label it without using
+the concrete URL path:
+
+```go
+httpstats.AddGroup(ctx, "/users")   // router group prefix, accumulates when nested
+httpstats.SetRoute(ctx, "/{id}")    // template relative to the group -> "/users/{id}"
+httpstats.SetError(ctx, err)        // handler error returned by value
+```
+
+`End.Route` and `End.HandlerError` carry the final values (`http.Request.Pattern`
+stands in when no group took the request). All three helpers are no-ops outside
+`ServerHandler`.
+
+`ServerHandler` stays transparent to `net/http`: the writer it passes on keeps
+`http.Flusher`, `http.Hijacker` and `http.Pusher` exactly when the real one has
+them and works with `http.ResponseController`; a handler that writes nothing
+still gets an `OutHeader` for the implicit 200; panics are reported through
+`End` and re-raised untouched, including `http.ErrAbortHandler`.
+
 ## Packages
 
 | Path | Purpose |
