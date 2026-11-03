@@ -395,3 +395,42 @@ func TestClientTagRequestCanSetHeaders(t *testing.T) {
 		t.Errorf("the caller's request was mutated: Traceparent=%q", v)
 	}
 }
+
+// A server that answers before it has read the request makes the transport's
+// write goroutine report WroteRequest while RoundTrip is already reading the
+// timings; run with -race.
+func TestClientTransportEarlyResponseDoesNotRace(t *testing.T) {
+	t.Parallel()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	client := &http.Client{Transport: NewClientTransport(WithClientHandler(&recordingHandler{}))}
+	payload := strings.Repeat("x", 1<<20)
+
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Go(func() {
+			req, err := http.NewRequestWithContext(
+				context.Background(),
+				http.MethodPost,
+				backend.URL,
+				strings.NewReader(payload),
+			)
+			if err != nil {
+				t.Error(err)
+
+				return
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				return
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		})
+	}
+	wg.Wait()
+}

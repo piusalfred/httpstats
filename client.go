@@ -140,10 +140,7 @@ func (ct *ClientTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		return nil, err //nolint:wrapcheck // returning RoundTripper error directly
 	}
 
-	ttfb := time.Duration(0)
-	if !timings.firstByteAt.IsZero() && !timings.wroteRequestAt.IsZero() {
-		ttfb = timings.firstByteAt.Sub(timings.wroteRequestAt)
-	}
+	ttfb := timings.ttfb()
 	ct.handler.HandleRequest(ctx, &InHeader{
 		Client:        true,
 		StatusCode:    resp.StatusCode,
@@ -164,10 +161,28 @@ func (ct *ClientTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 }
 
 type traceTimings struct {
-	dnsStart, dnsDone           time.Time
-	tcpStart, tcpDone           time.Time
-	tlsStart, tlsDone           time.Time
+	dnsStart, dnsDone time.Time
+	tcpStart, tcpDone time.Time
+	tlsStart, tlsDone time.Time
+
+	// The transport's write and read goroutines report these two, and
+	// RoundTrip reads them once the response headers are in, so they need
+	// the lock (a server may answer before the request is fully written).
+	mu                          sync.Mutex
 	wroteRequestAt, firstByteAt time.Time
+}
+
+// ttfb is the time from the request being written to the first response byte,
+// or zero if either was not observed.
+func (t *traceTimings) ttfb() time.Duration {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.firstByteAt.IsZero() || t.wroteRequestAt.IsZero() {
+		return 0
+	}
+
+	return t.firstByteAt.Sub(t.wroteRequestAt)
 }
 
 func (ct *ClientTransport) attachTrace(ctx context.Context, req *http.Request, t *traceTimings) context.Context {
@@ -209,7 +224,9 @@ func (ct *ClientTransport) attachTrace(ctx context.Context, req *http.Request, t
 			})
 		},
 		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			t.mu.Lock()
 			t.wroteRequestAt = time.Now()
+			t.mu.Unlock()
 			if info.Err != nil {
 				ct.handler.HandleRequest(ctx, &OutData{
 					Client: true,
@@ -218,7 +235,11 @@ func (ct *ClientTransport) attachTrace(ctx context.Context, req *http.Request, t
 				})
 			}
 		},
-		GotFirstResponseByte: func() { t.firstByteAt = time.Now() },
+		GotFirstResponseByte: func() {
+			t.mu.Lock()
+			t.firstByteAt = time.Now()
+			t.mu.Unlock()
+		},
 		PutIdleConn: func(err error) {
 			if !gotConnReused || err != nil {
 				if connCtx == nil {
